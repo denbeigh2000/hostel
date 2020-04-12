@@ -5,6 +5,10 @@ import (
 	"io"
 )
 
+// TODO: Need to be more specific here
+
+type Image interface{}
+
 type TermSize struct {
 	Height uint32
 	Width  uint32
@@ -21,4 +25,8 @@ type InteractiveInput interface {
 
 type Spawner interface {
 	Spawn(ctx context.Context, taskName, containerName string, argv []string, in InteractiveInput) error
+}
+
+type ContainerManager interface {
+	Prepare(ctx context.Context, imageRef string) error
 }
