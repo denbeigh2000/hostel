@@ -23,8 +23,13 @@ type InteractiveInput interface {
 	Updates() <-chan TermSize
 }
 
+type ExitStatus struct {
+	Code  uint32
+	Error error
+}
+
 type Spawner interface {
-	Spawn(ctx context.Context, taskName, containerName string, argv []string, in InteractiveInput) error
+	Spawn(ctx context.Context, imageRef string, argv []string, in InteractiveInput) (<-chan ExitStatus, error)
 }
 
 type ContainerManager interface {
