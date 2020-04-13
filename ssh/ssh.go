@@ -123,19 +123,7 @@ func (s *Server) handleSession(
 ) {
 	var size *container.TermSize
 	username := conn.User()
-	conf := s.conf.Defaults
-	user, ok := s.conf.UserOverrides[username]
-	if ok {
-		if user.DefaultArgv != nil {
-			conf.DefaultArgv = user.DefaultArgv
-		}
-		if user.Image != "" {
-			conf.Image = user.Image
-		}
-		if user.MaxSessionDuration > 0 {
-			conf.MaxSessionDuration = user.MaxSessionDuration
-		}
-	}
+	conf := s.sessions.UserSession(username)
 
 	for req := range reqs {
 		defer channel.Close()
@@ -144,50 +132,92 @@ func (s *Server) handleSession(
 		switch req.Type {
 		case "exec", "shell":
 
-			var command []string
-			if req.Type == "shell" {
-				command = conf.DefaultArgv
-			} else {
-				var msg execMsg
-				err := ssh.Unmarshal(req.Payload, &msg)
-				if err != nil {
-					req.Reply(false, []byte(fmt.Sprintf("error unmarshaling command: %v", err)))
-					return
-				}
-
-				command = strings.Split(msg.Command, " ")
-			}
-
 			in := newInteractive(channel, reqs, size)
+			outCh, err := s.handleShellExec(ctx, req, conf, in)
+			if err != nil {
+				req.Reply(false, []byte(err.Error()))
+				return
+			}
 
 			req.Reply(true, nil)
-			err := s.spawner.Spawn(ctx, "", "", command, in)
-			if err != nil {
-				log.Printf("error spawning process: %v", err)
+
+			select {
+			case <-ctx.Done():
+				err := ctx.Err()
+				switch err {
+				case context.Canceled:
+					fmt.Fprintf(channel, "exiting: server shutdown\n")
+				case context.DeadlineExceeded:
+					fmt.Fprintf(channel, "exiting: session open longer than %v\n", conf.MaxSessionDuration)
+				}
+			case exit := <-outCh:
+				msg := ssh.Marshal(exitStatusMsg{Status: exit.Code})
+				_, err := channel.SendRequest("exit-status", false, msg)
+				if err != nil {
+					log.Printf("could not send exit setatus back to %v@%v, %v", conn.User(), conn.RemoteAddr(), err)
+				}
 			}
+
+			if err != nil {
+				req.Reply(false, []byte(err.Error()))
+			} else {
+				req.Reply(true, nil)
+			}
+
 			return
 
 		case "pty-req":
-			if size != nil {
-				req.Reply(false, []byte("already initialised"))
-				continue
-			}
-
-			var ptyReq ptyRequestMsg
-			err := ssh.Unmarshal(req.Payload, &ptyReq)
+			err := handlePtyReq(req, size)
 			if err != nil {
-				req.Reply(false, []byte(fmt.Sprintf("failed to unmarshal payload: %v", err)))
+				req.Reply(false, []byte(err.Error()))
 				continue
 			}
 
-			size = &container.TermSize{
-				Width:  ptyReq.Columns,
-				Height: ptyReq.Rows,
-			}
 			req.Reply(true, nil)
 
 		default:
 			req.Reply(false, nil)
 		}
 	}
+}
+
+func (s *Server) handleShellExec(ctx context.Context, req *ssh.Request, conf config.Session, in container.InteractiveInput) (<-chan container.ExitStatus, error) {
+	var command []string
+	if req.Type == "shell" {
+		command = conf.DefaultArgv
+	} else {
+		var msg execMsg
+		err := ssh.Unmarshal(req.Payload, &msg)
+		if err != nil {
+			return nil, errors.Wrap(err, "error unmarshaling command")
+		}
+
+		command = strings.Split(msg.Command, " ")
+	}
+
+	outCh, err := s.spawner.Spawn(ctx, conf.Image, command, in)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not spawn process")
+	}
+
+	return outCh, nil
+}
+
+func handlePtyReq(req *ssh.Request, size *container.TermSize) error {
+	if size != nil {
+		return errors.New("pty already initialised")
+	}
+
+	var ptyReq ptyRequestMsg
+	err := ssh.Unmarshal(req.Payload, &ptyReq)
+	if err != nil {
+		return errors.Errorf("failed to unmarshal payload: %v", err)
+	}
+
+	size = &container.TermSize{
+		Width:  ptyReq.Columns,
+		Height: ptyReq.Rows,
+	}
+
+	return nil
 }
