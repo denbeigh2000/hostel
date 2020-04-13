@@ -45,12 +45,14 @@ func readAuthorizedKeys(path string) (map[string]key, error) {
 		authdKeyBytes []byte
 		err           error
 	)
+
+	log.Printf("loading authorized keys from %v", path)
 	authdKeyBytes, err = ioutil.ReadFile(path)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not read authorized_keys file")
 	}
 
-	for authdKeyBytes != nil {
+	for len(authdKeyBytes) > 0 {
 		pubkey, comment, _, authdKeyBytes, err = ssh.ParseAuthorizedKey(authdKeyBytes)
 		if err != nil {
 			return nil, errors.Wrap(err, "could not parse authorized_keys entry")

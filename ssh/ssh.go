@@ -3,7 +3,6 @@ package ssh
 import (
 	"context"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -43,7 +42,7 @@ type exitStatusMsg struct {
 	Status uint32
 }
 
-func NewServer(authorizedKeysPath string, hostKey io.Reader, sessions config.UserSessionProvider, spawner container.Spawner) (*Server, error) {
+func NewServer(authorizedKeysPath, hostKeyPath string, sessions config.UserSessionProvider, spawner container.Spawner) (*Server, error) {
 	auth, err := newAuth(authorizedKeysPath)
 	if err != nil {
 		return nil, errors.Wrap(err, "not able to create auth object")
@@ -60,7 +59,7 @@ func NewServer(authorizedKeysPath string, hostKey io.Reader, sessions config.Use
 		PublicKeyCallback: certChecker.Authenticate,
 	}
 
-	keyBytes, err := ioutil.ReadAll(hostKey)
+	keyBytes, err := ioutil.ReadFile(hostKeyPath)
 	if err != nil {
 		return nil, errors.Wrap(err, "couldn't read host key")
 	}
@@ -87,6 +86,15 @@ type Server struct {
 
 	sessions config.UserSessionProvider
 	spawner  container.Spawner
+}
+
+func (s *Server) Serve(host string, port int) error {
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		return errors.Wrap(err, "could not open tcp socket")
+	}
+
+	return s.listen(listener.(*net.TCPListener))
 }
 
 func (s *Server) listen(l *net.TCPListener) error {
