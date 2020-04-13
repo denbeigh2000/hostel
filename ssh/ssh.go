@@ -88,29 +88,51 @@ type Server struct {
 	spawner  container.Spawner
 }
 
-func (s *Server) Serve(host string, port int) error {
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
+func (s *Server) Serve(ctx context.Context, host string, port int) error {
+	lc := &net.ListenConfig{}
+	listener, err := lc.Listen(ctx, "tcp", fmt.Sprintf("%s:%d", host, port))
 	if err != nil {
 		return errors.Wrap(err, "could not open tcp socket")
 	}
 
-	return s.listen(listener.(*net.TCPListener))
+	return s.listen(ctx, listener.(*net.TCPListener))
 }
 
-func (s *Server) listen(l *net.TCPListener) error {
+func (s *Server) listen(ctx context.Context, l *net.TCPListener) error {
 	log.Printf("Serving on %v", l.Addr())
 
-	for {
-		conn, err := l.AcceptTCP()
-		if err != nil {
-			return err
-		}
+	conns := make(chan *net.TCPConn)
+	defer close(conns)
 
-		go s.handleConn(conn, s.sshConf)
+	errs := make(chan error)
+	defer close(errs)
+
+	go func() {
+		for {
+			conn, err := l.AcceptTCP()
+			if err != nil {
+				errs <- err
+				return
+			}
+
+			conns <- conn
+		}
+	}()
+
+	for {
+		select {
+		case conn := <-conns:
+			go s.handleConn(ctx, conn, s.sshConf)
+		case err := <-errs:
+			return errors.Wrap(err, "could not accept tcp connection")
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
+
 }
 
-func (s *Server) handleConn(tConn *net.TCPConn, config *ssh.ServerConfig) {
+func (s *Server) handleConn(ctx context.Context, tConn *net.TCPConn, config *ssh.ServerConfig) {
 	conn, chans, reqs, err := ssh.NewServerConn(tConn, config)
 	if err != nil {
 		log.Printf("Failed to create SSH connection: %s", err)
@@ -129,9 +151,7 @@ func (s *Server) handleConn(tConn *net.TCPConn, config *ssh.ServerConfig) {
 				log.Printf("Could not accept channel: %v", err)
 			}
 
-			// TODO
-			go ssh.DiscardRequests(requests)
-			channel.Close()
+			s.handleSession(ctx, conn, channel, requests)
 
 		default:
 			newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
@@ -160,6 +180,7 @@ func (s *Server) handleSession(
 			in := newInteractive(channel, reqs, size)
 			outCh, err := s.handleShellExec(ctx, req, conf, in)
 			if err != nil {
+				log.Printf("could not handle shell/exec: %v", err)
 				req.Reply(false, []byte(err.Error()))
 				return
 			}
@@ -179,7 +200,7 @@ func (s *Server) handleSession(
 				msg := ssh.Marshal(exitStatusMsg{Status: exit.Code})
 				_, err := channel.SendRequest("exit-status", false, msg)
 				if err != nil {
-					log.Printf("could not send exit setatus back to %v@%v, %v", conn.User(), conn.RemoteAddr(), err)
+					log.Printf("could not send exit status back to %v@%v, %v", conn.User(), conn.RemoteAddr(), err)
 				}
 			}
 
