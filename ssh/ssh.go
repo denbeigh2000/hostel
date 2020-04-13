@@ -39,11 +39,25 @@ type ptyWindowChangeMsg struct {
 	Height  uint32
 }
 
-func NewServer(hostKey io.Reader, conf config.Global, spawner container.Spawner) (*Server, error) {
+type exitStatusMsg struct {
+	Status uint32
+}
+
+func NewServer(authorizedKeysPath string, hostKey io.Reader, sessions config.UserSessionProvider, spawner container.Spawner) (*Server, error) {
+	auth, err := newAuth(authorizedKeysPath)
+	if err != nil {
+		return nil, errors.Wrap(err, "not able to create auth object")
+	}
+
+	certChecker := ssh.CertChecker{
+		UserKeyFallback: auth.Authenticate,
+	}
+
 	sshConf := &ssh.ServerConfig{
 		BannerCallback: func(conn ssh.ConnMetadata) string {
 			return fmt.Sprintf("User %s from %s\n", conn.User(), conn.RemoteAddr().String())
 		},
+		PublicKeyCallback: certChecker.Authenticate,
 	}
 
 	keyBytes, err := ioutil.ReadAll(hostKey)
@@ -60,16 +74,19 @@ func NewServer(hostKey io.Reader, conf config.Global, spawner container.Spawner)
 
 	return &Server{
 		sshConf,
-		conf,
+		auth,
+
+		sessions,
 		spawner,
 	}, nil
 }
 
 type Server struct {
 	sshConf *ssh.ServerConfig
+	auth    *auth
 
-	conf    config.Global
-	spawner container.Spawner
+	sessions config.UserSessionProvider
+	spawner  container.Spawner
 }
 
 func (s *Server) listen(l *net.TCPListener) error {
