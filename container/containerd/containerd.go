@@ -2,13 +2,17 @@ package containerd
 
 import (
 	"context"
-	"github.com/denbeigh2000/hostel/container"
+	"log"
 	"strings"
+
+	"github.com/denbeigh2000/hostel/container"
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/cio"
 	"github.com/pkg/errors"
 )
+
+var _ container.ManagerSpawner = &ContainerdSpawner{}
 
 type ContainerdSpawner struct {
 	client         *containerd.Client
@@ -68,7 +72,7 @@ func (c *ContainerdSpawner) Spawn(ctx context.Context, imageRef string, argv []s
 		return nil, errors.Wrap(err, "could not create task")
 	}
 
-	ctrCh, err := task.Wait(ctx)
+	exitCh, err := task.Wait(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "could not wait for task")
 	}
@@ -77,11 +81,24 @@ func (c *ContainerdSpawner) Spawn(ctx context.Context, imageRef string, argv []s
 	go func() {
 		defer close(ch)
 
-		status := <-ctrCh
-		ch <- container.ExitStatus{
-			Code:  status.ExitCode(),
-			Error: status.Error(),
+		updateCh := in.Updates()
+
+		for {
+			select {
+			case size := <-updateCh:
+				err := task.Resize(ctx, size.Width, size.Height)
+				if err != nil {
+					log.Printf("could not resize: %v", err)
+				}
+			case status := <-exitCh:
+				ch <- container.ExitStatus{
+					Code:  status.ExitCode(),
+					Error: status.Error(),
+				}
+				return
+			}
 		}
 	}()
+
 	return ch, nil
 }

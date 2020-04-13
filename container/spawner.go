@@ -28,10 +28,15 @@ type ExitStatus struct {
 	Error error
 }
 
+type ManagerSpawner interface {
+	Manager
+	Spawner
+}
+
 type Spawner interface {
 	Spawn(ctx context.Context, imageRef string, argv []string, in InteractiveInput) (<-chan ExitStatus, error)
 }
 
-type ContainerManager interface {
+type Manager interface {
 	Prepare(ctx context.Context, imageRef string) error
 }
